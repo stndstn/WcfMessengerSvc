@@ -11,6 +11,7 @@ namespace MessengerLib
     public class Messenger : IMessenger
     {
         static List<string> sUserList = new List<string>();
+        static Dictionary<string, long> sUserLastAccessDict = new Dictionary<string, long>();
         static Dictionary<Guid, SessionUserContext> sSessionContextDict = new Dictionary<Guid, SessionUserContext>();
         static Queue<AutoResetEvent> sAutoEventQueueForMemberList = new Queue<AutoResetEvent>();
         //static Dictionary<Guid, List<string>> sSessionGroupMember = new Dictionary<Guid, List<string>>();
@@ -151,6 +152,8 @@ namespace MessengerLib
                 return false;
             }
             sUserList.Add(userid);
+            long tNow = DateTime.Now.Ticks;
+            sUserLastAccessDict.Add(userid, tNow);
             sConnReqQueueUser.Add(userid, new Queue<ConnectionRequestData>());
             sConnReqAutoEventUser.Add(userid, new AutoResetEvent(false));
             while (sAutoEventQueueForMemberList.Count > 0)
@@ -164,16 +167,36 @@ namespace MessengerLib
             Console.WriteLine("Logout called with: \"{0}\"", userid);
             //string host_port = getClientHostPort();
             sUserList.Remove(userid);
+            sUserLastAccessDict.Remove(userid);
             while (sAutoEventQueueForMemberList.Count > 0)
             {
                 sAutoEventQueueForMemberList.Dequeue().Set();
             }
             //autoEventForMessageDictForUser.Remove(userid);
         }
+        private void UserListHouseKeeping()
+        {
+            DateTime dtNow = DateTime.Now;
+            string[] keys = new string[sUserLastAccessDict.Count];
+            sUserLastAccessDict.Keys.CopyTo(keys, 0);
+            foreach (string k in keys)
+            {
+                if (sUserLastAccessDict.ContainsKey(k))
+                {
+                    long v = sUserLastAccessDict[k];
+                    DateTime dtLast = new DateTime(v);
+                    if (dtNow - dtLast > TimeSpan.FromMinutes(3))
+                    {
+                        Logout(k);
+                    }
+                }
+            }
+        }
         public string GetMemberList()
         {
             Console.WriteLine("ReceiveMemberList called ");
             string list = "";
+            UserListHouseKeeping();
             foreach (string member in sUserList)
             {
                 if (list.Length > 0)
@@ -186,6 +209,7 @@ namespace MessengerLib
         public IAsyncResult BeginReceiveMemberList(AsyncCallback callback, object asyncState)
         {
             Console.WriteLine("BeginReceiveMemberList called ");
+            UserListHouseKeeping();
             AutoResetEvent are = new AutoResetEvent(false);
             sAutoEventQueueForMemberList.Enqueue(are);
             are.WaitOne();
@@ -209,6 +233,7 @@ namespace MessengerLib
         public ConnectionResultData RequestConnect(string userFrom, string userTo)
         {
             Console.WriteLine("RequestConnect called with: \"{0}\" -> \"{1}\"", userFrom, userTo);
+            sUserLastAccessDict[userFrom] = DateTime.Now.Ticks;
             Guid groupGuid = Guid.NewGuid();
             Guid userSessionGuid = Guid.NewGuid();
             sSessionGroupDict.Add(groupGuid, new List<Guid>());
@@ -235,6 +260,7 @@ namespace MessengerLib
         public IAsyncResult BeginReceiveConnection(string userid, AsyncCallback callback, object asyncState)
         {
             Console.WriteLine("BeginReceiveConnection called ");
+            sUserLastAccessDict[userid] = DateTime.Now.Ticks;
             sConnReqAutoEventUser[userid].WaitOne();
             ConnectionRequestData connreq = sConnReqQueueUser[userid].Dequeue();
             Guid userSessionGuid = Guid.NewGuid();
@@ -333,10 +359,12 @@ namespace MessengerLib
                 if (sSessionContextDict[userSessionGuid].UserId != data.userid)
                     sSessionContextDict[userSessionGuid].contentDataQueueAndEvent.QueueDataAndSetEvent(data);
             }
+            sUserLastAccessDict[data.userid] = DateTime.Now.Ticks;
         }
         public IAsyncResult BeginReceiveContentData(Guid userSessionGuid, AsyncCallback callback, object asyncState)
         {
             Console.WriteLine("BeginReceiveContentData called");
+            sUserLastAccessDict[sSessionContextDict[userSessionGuid].UserId] = DateTime.Now.Ticks;
             ContentData data = sSessionContextDict[userSessionGuid].contentDataQueueAndEvent.GetOrWaitDataInQueue();
             return new CompletedAsyncResult<ContentData>(data);
         }
